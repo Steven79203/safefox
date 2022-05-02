@@ -1,0 +1,15 @@
+#!/usr/bin/bash 
+
+# Script para criação e inicialização do librewolf com perfis encriptados
+
+# TODO 
+# 1 - Interface em TUI
+# 2 - Selecionar o perfil a ser criptografado
+# 3 - Perguntar qual criptografica usar (simétrica/assimétrica)
+# 4 - Fazer cópia de segurança antes da modificação
+# 5 - Empacotar, criptografar e excluir a pasta do perfil antigo.
+# 6 - Anexar extensão especial para identificar o arquivo posteriormente
+# 7 - O script deve ter dois modos de operação 
+# 7.1 - Criação - Cria um perfil criptografados
+# 7.2 - Inicialização - Abre o librewolf usando o perfil criptografado
+# 8 - Opcionalmente um modo CLI que aceita diretamente argumentos em linha de comando
