@@ -1,0 +1,451 @@
+#!/usr/bin/env bash
+
+# SafeFox v0.1
+# 2022 - mendes94
+
+# First commit 
+
+# TODO
+# 1 - Select the operation (create, restore, delete, launch) - DONE
+
+# Create -> Browser -> ProfDir -> Prof -> Pass or PGP -> Encrypt -> RemoveOld - DONE
+# 2 - Create
+# 2.1 - Select which browser to encrypt the profile (firefox, librewolf) - DONE
+# 2.2 - Select the profile folder - DONE
+# 2.3 - Set which encryption method to use - DONE
+# 2.3.1 - If assymetric, get the public key to use - DONE
+# 2.3.2 - If symmetric, get the password - DONE
+# 2.4 - Package, encrypt and shred original profile - DONE
+# 2.4.1 - Ask to rename the original profile or keep the original
+# 2.4.2 - Ask to remove the cache directory for the corresponding profile
+# 2.5 - Remove path from the ini file - DONE
+
+# Restore -> Browser -> Profdir -> GPG File -> Extract -> Remove GPG -> Remove Tar - DONE
+# 3 - Restore
+# 3.1 - Select browser
+# 3.2 - Select browser's profile path dir
+# 3.3 - Select profile encrypted file 
+# 3.4 - Extract the content to profiles directory 
+# 3.5 - Remove the GPG file
+# 3.6 - Remove the tar
+
+# Load -> Browser -> Profdir -> GPG FIle -> Decrypt to memory -> Extract to memory -...
+#      -> load Browser -> Exit -> Archive memory prof -> Encrypt to non-volat -> remove tmp folder
+# 4 - Load profile
+# 4.1 - Select which browser to use
+# 4.2 - Get the profiles directory path
+# 4.3 - Decrypt content to memory (tmpfs)
+# 4.4 - Extract content
+# 4.5 - Load browser with the selected profile 
+# 4.6 - When exits.
+# 4.6.1 - Archive the new profile on tmpfs
+# 4.6.2 - Encrypt the profile on tmpfs
+# 4.6.3 - Remove the old encrypted profile and move the new one to disk
+# 4.6.4 - Remove the tmpfs folder
+
+# Load -> Browser -> Profdir -> GPG File -> Decrypt in tmpfs ...
+#      -> Extract in tmpfs -> Run browser with profile -> ...
+#      -> After exiting, archive, encrypt and overwrite old gpg
+#      -> Remove tmpfs folder
+
+# Modify - Modify which encryption method is being used.
+
+# CONSTANTS
+declare -A BROWSERS_PATH=(
+    ["Firefox"]="$HOME/.mozilla/firefox"
+    ["Librewolf"]="$HOME/.librewolf"
+    ["TorBrowser"]="$HOME/.local/share/torbrowser/tbb/x86_64/tor-browser_*/Browser/TorBrowser/Data/Browser"
+    ["WaterFox"]="$HOME/.waterfox")
+
+TMPDIR=/tmp/safefox
+#LOGFILE=/tmp/safefox.log
+
+# FUNCTIONS
+arguments_parser(){
+    local FJ="firejail --quiet --seccomp";
+    local AA="--apparmor"
+    local X11="--x11"
+    while [ "$1" ] ; do
+    # TODO: Extra arguments for firejail
+        case $1 in 
+            "--firejail"|"-j") export FJ ;;
+            "--firearmor"|"-a") export FJ="$FJ $AA";;
+            "--nested"|"-n") export FJ="$FJ $X11" ;;
+            "--paranoid"|"-p") export FJ="$FJ $AA $X11";;
+            "--tmpfolder"|"-t") export TMPDIR=$2 ;;
+            "--help"|"-h") export help=1 ;;
+        esac
+        shift
+    done   
+}
+
+callforhelp(){
+    cat <<< "Usage: safefox [options]
+
+SafeFox is a bash script utility to create and manage encrypted profiles for Firefox based browsers.
+
+Options:
+--firejail,          -j  - Starts the browser on a firejail sandbox with --seccomp and --quiet flags. Needs the firejail package.
+--firearmor,         -a  - The same as the firejail options plus the --apparmor option. Needs both apparmor and firejail packages.
+--nested,            -n  - Puts the browser on a nested X11 session. You need the Xorg-Xephyr package to use it.
+--paranoid,          -p  - All the options above combined (firejail --seccomp --apparmor --x11 --quiet)
+--fjargs [a1,a2,..], -f  - Additional firejail args separated by comma and without space
+--tmpfolder              - Change the default temporary folder (default:/tmp/safefox)
+--help,              -h  - Prints this help message"
+    exit 1
+}
+
+operation(){
+    dialog --title "SafeFox" --menu "Select an operation" 10 80 0 \
+    "Create"  " Create a new encrypted profile" \
+    "Restore" " Decript a profile to an original state" \
+    "Launch"    " Start the browser with an encrypted profile" \
+    3>&1 1>&2 2>&3
+}
+
+which_browser(){
+    local browlist=()
+    while IFS=$'\n' read -r key; do
+        browlist+=("$key" "")
+    done < <(printf "%s\n" "${!BROWSERS_PATH[@]}")
+    
+    dialog --title "Browser selection" \
+    --menu "Select the browser" 10 25 3 \
+    "${browlist[@]}"  3>&1 1>&2 2>&3
+}
+
+browser_path(){
+    # Sets the browser to use 
+    local browser=$1 
+    echo "${BROWSERS_PATH["$browser"]}"
+}
+
+profile(){
+    [ "$1" ] || return 1
+    local ini="$1/profiles.ini"
+    
+    [ -e "$ini" ] || return 3
+    
+    local profs=()
+    while IFS= read -r prof; do
+        profs+=("$prof" "")
+    done < <(awk -F'=' '/^Path/ {print $2}' < "$ini")
+
+    if [ ${#profs[@]} -eq 0 ]; then
+        dialog --title "SafeFox" --msgbox "Browser isn't installed or wrong profiles folder"
+        return 1
+    fi
+    dialog --title 'SafeFox' --menu "Select Profile" 15 40 5 "${profs[@]}" 3>&1 1>&2 2>&3
+}
+
+encrypted_prof(){
+    local profdir="$1" 
+    local proflist=()
+    
+    while read -r prof; do #in $(find "$profdir" -maxdepth 1 -iname '*.gpg' | awk -F'/' '{print $NF}'); do
+        proflist+=("$prof" "")
+    done < <(awk '/.*\.gpg/ {print $0}' <(ls "$profdir"))
+    
+    if [ ${#proflist[@]} -eq 0 ]; then
+        dialog --title "SafeFox" \
+               --msgbox "No encrypted profile available for this browser" 8 80 3>&1 1>&2 2>&3;
+        return 2
+    fi
+    dialog --title 'SafeFox' \
+           --menu 'Select encrypted profile to restore' 15 40 5 "${proflist[@]}" 3>&1 1>&2 2>&3
+}
+
+encryption_method(){
+    dialog --title 'SafeFox' --menu 'Select Encyption Method' 10 90 2 \
+    "Symmetric"  "   Uses a password to both encrypt and decrypt the file" \
+    "Asymmetric" "   Uses a public-private key pair scheme to encrypt and decrypt" \
+    3>&1 1>&2 2>&3
+}
+
+file_encryption_method(){
+    [ "$1" ] || return 2
+    local filepath=$1; 
+    
+    local filedata
+    filedata=$(file "$filepath")
+
+    local method
+    method=$(echo "$filedata" | grep -o 'symmetrically')
+    
+    if [[ $method = "symmetrically" ]];then
+        echo "Symmetric"
+    else
+        echo "Asymmetric"
+    fi
+}
+
+pgp_recipient(){
+    local list=()
+    while IFS= read -r key; do
+        list+=("$key" "")
+    done < <(gpg --list-keys | grep -oP '(?<=\<).*(?=\>)' | sort)
+    
+    if [ ${#list[@]} -eq 0 ]; then
+        dialog --title "SafeFox" --msgbox "No PGP recipients available"; return 2
+    fi
+    dialog --title 'SafeFox' --menu "Select Recipient" 40 80 30 "${list[@]}" 3>&1 1>&2 2>&3
+}
+
+encrypt(){
+    # Labels for the arguments 
+    local profdir=$1 
+    local profile=$2
+    local cipher=$3
+    local destdir=$4
+    local tarfile="${profile}.tar"
+    local gpgfile="${profile}.gpg"
+   
+    # TODO
+    # 1 - Output stderr to a log '/var/tmp/safefox.log'
+    {
+        if ! tar --directory="$profdir" -cf "$destdir/$tarfile" "$profile"; then 
+            dialog --title "SafeFox" --infobox "An error occurred. Exiting" 15 80;
+            sleep 2;
+            return 2;
+        fi
+        echo 100
+    } | dialog --title "SafeFox" --gauge "Archiving profile..." 8 80
+
+    {
+        if [[ $cipher = "Asymmetric" ]]; then
+            recipient=$(pgp_recipient)
+            [ "$recipient" ] || rm -r "$TMPDIR" && return 1
+            gpg -o "$destdir/$gpgfile" --encrypt --recipient "$recipient" "$destdir/$tarfile" 2> /dev/null
+        else
+            gpg -o "$destdir/$gpgfile" -c "$destdir/$tarfile" 2> /dev/null;
+            if [ $? -eq 2 ]; then
+                rm -r "$TMPDIR"
+                return 2
+            fi
+        fi
+        echo 50; sleep 0.25; echo 100
+    } | dialog --title "SafeFox" --gauge "Encrypting profile" 8 80
+
+    return 0
+}
+
+sanitize(){
+    local profpath=$1
+    local cachedir=$HOME/.cache/${profpath//$HOME\/\./}/
+    [ "$profpath" ] || exit 1
+
+    if ! dialog --title "SafeFox" --yesno "The following data will be wiped:\n\n\
+Decrypted profile directory: $profpath\n\
+Remember:\n
+1 - If you forget the password or lose access to the keys your profile will be inaccessible.\n\
+2 - This process is irreversible.\n\
+3 - Make a backup copy for precaution.\n\n\
+Continue? " 15 100; then
+        return 1
+    fi
+    { find "$profpath" -type f -iname '*' -exec shred -u {} +; rm -r "$profpath"
+        echo 100
+    } | dialog --title "SafeFox" --gauge "Wiping old profile files..." 8 80
+
+    # Delete cache dir 
+    if ! dialog --title "SafeFox" --yesno \
+                "Do you also want to delete the cache directory:\nCache Dir: $cachedir" 8 80; then
+        return 0
+    fi
+    
+    { find "$cachedir" -type f -iname "*" -exec shred -u {} +; rm -r "$cachedir"
+        echo 100
+    } | dialog --title "SafeFox" --gauge "Wiping cache..."
+
+    return 0
+}
+
+decrypt(){
+    {   local profdir=$1 
+        local gpgfile=$2 
+        local tarfile=$3 
+        local destdir=$4
+        
+        gpg --decrypt --quiet -o "$destdir/$tarfile" "$profdir/$gpgfile"
+        
+        echo 50 
+        if ! tar --directory="$destdir" -xf "$destdir/$tarfile"; then
+            return 1
+        fi
+
+        echo 100
+    } | dialog --title "SafeFox" --gauge "Decripting profile..." 8 80
+}
+
+run_browser(){
+    dialog --title "SafeFox" --infobox "Starting browser..." 8 80
+    case $1 in
+        "Firefox") $FJ firefox --private-window --profile "$TMPDIR/$2" &> /dev/null;;
+        "TorBrowser") ;;
+        "Librewolf") $FJ librewolf --private-window --profile "$TMPDIR/$2" &> /dev/null;;
+        *) return 1;;
+    esac
+    dialog --title "SafeFox" --infobox "Closing the browser" 8 80
+}
+
+
+# == OPERATIONS == #
+create(){
+    # Select browser and sets profiles directory
+    local profdir
+    profdir=$(browser_path "$(which_browser)");
+    [ "$profdir" ] || return 2
+    
+    # Get profile
+    local profile
+    profile=$(profile "$profdir");
+    [ "$profile" ] || return 2
+    
+    # If the selected profile dir doesn't exist. It exits
+    if [ ! -d "$profdir/$profile" ];then
+        dialog --title "SafeFox" \
+        --msgbox "There's no $profile directory at $profdir" 8 100
+        return 0
+    fi
+    
+    # Cipher type. (asymmetric, symmetric)
+    local cipher
+    cipher=$(encryption_method);
+    # If cipher is empty it exits (probably canceled by user)
+    [ "$cipher" ] || return 0
+
+    [ -d "$TMPDIR" ] || mkdir -m 700 "$TMPDIR"
+    
+    # encrypt <profile_rootdir> <profile> <cipher> <destdir>
+    if ! encrypt "$profdir" "$profile" "$cipher" "$TMPDIR"; then
+        dialog --title 'SafeFox' --infobox 'Operation canceled by the user' 8 80
+        exit 
+    fi
+    
+    [[ ! -e "$TMPDIR/${profile}.gpg" ]] && exit 2
+
+    # Remove old and decrypted files
+    if ! sanitize "$profdir/$profile"; then
+        {  rm -r "$TMPDIR"
+           echo 100
+        } | dialog --title "SafeFox" --gauge "Operation aborted. Cleaning temporary files..." 8 80
+        return 0
+    fi
+
+    # Moving encrypted profile to disk
+    mv "$TMPDIR/${profile}.gpg" "$profdir"
+    rm -r "$TMPDIR"
+    sed -i "/Path=${profile}/ s/./#&/" "$profdir/profiles.ini"
+    
+    dialog --title 'SafeFox' \
+           --msgbox 'Encrypted profile created with success.' 8 80 
+    return 0
+}
+
+restore(){
+    local profdir
+    profdir=$(browser_path "$(which_browser)"); 
+    [ "$profdir" ] || return 0
+    
+    local gpgprof
+    gpgprof=$(encrypted_prof "$profdir"); 
+    [ "$gpgprof" ] || return 0
+    
+    local tarprof="${gpgprof//gpg/tar}"
+    local profile="${gpgprof//.gpg/}"
+
+    [ -d "$TMPDIR" ] || mkdir -m 700 "$TMPDIR"
+    
+    # decrypt <profiles_dir> <gpg_file_name> <tar_file_name> <destdir>
+    decrypt "$profdir" "$gpgprof" "$tarprof" "$TMPDIR"
+    
+    if [ ! -d "$TMPDIR/${gpgprof%.gpg}" ] || [ ! -e "$TMPDIR/$tarprof" ]; then 
+        dialog --title "SafeFox" --msgbox "\
+        An error occuried while decripting the profile.\n\
+        Check the logs at /var/tmp/safefox.log." 10 80 && 
+        return 0
+    fi
+    
+    mv "$TMPDIR/$profile" "$profdir"
+    rm -r "$TMPDIR"
+    rm "$profdir/$gpgprof"
+    sed -i "/Path=${tarprof%%.*}/ s/#//" "$profdir/profiles.ini" 
+    dialog --title "SafeFox" --msgbox "Profile restored with success..." 8 80
+
+    return 0
+}
+
+load(){
+   local browser
+   browser=$(which_browser); [ "$browser" ] || return 0
+   
+   local profdir
+   profdir=$(browser_path "$browser")
+   
+   local gpgfile
+   gpgfile=$(encrypted_prof "$profdir"); [ "$gpgfile" ] || return 2
+   
+   local tarfile=${gpgfile//gpg/tar}
+
+    [ -d "$TMPDIR" ] || mkdir -m 700 "$TMPDIR"
+    
+    decrypt "$profdir" "$gpgfile" "$tarfile" "$TMPDIR"; 
+    
+    # If there's no directory, return an error
+    [ ! -d "$TMPDIR/${tarfile//.tar/}" ] && rm -r "$TMPDIR" && return 1
+
+    # Remove tmp tar file
+    rm "$TMPDIR/$tarfile"
+
+    # Running browser
+    run_browser "$browser" "${gpgfile//.gpg/}"
+
+    # Reencrypting folder to save modifications 
+    encrypt "$TMPDIR" "${gpgfile//.gpg}" "$(file_encryption_method "$profdir/$gpgfile")" "$TMPDIR"
+
+    # Checks if the gpg profile was created in tmpfs
+    # to avoid removing the original one by accident
+    if [ ! -e "$TMPDIR/$gpgfile" ]; then
+        dialog --title 'SafeFox' --msgbox \
+            "An error occurried!.\n\
+             Couldn't generate the encrypted file from the currently running profile.\n\
+             Any changes to the profile won't be saved." 8 80
+        rm -r "$TMPDIR"
+        return 1
+    fi
+
+    # Remove old gpgfile
+    rm "$profdir/$gpgfile"
+    # Move the new profile from TMPDIR to PROFDIR
+    mv "$TMPDIR/$gpgfile" "$profdir"
+    rm -r "$TMPDIR"
+    
+    return 0
+}
+
+#MAIN FUNCTION
+main(){
+    arguments_parser "$@"
+    [ "$help" ] && callforhelp
+    while true; do    
+        case $(operation) in 
+            "Create") create;;
+            "Restore") restore;;
+            "Launch") load;;
+            "") return 0 ;;  
+        esac
+        if ! dialog --title "SafeFox" --clear \
+                    --yesno "Process finished. Do you want to make another operation?" \
+                      8 80; then
+            break
+        fi
+    done
+}
+
+main "$@"
+clear
+if hash cowsay; then
+    cowsay -f tux "Goodbye, $USER"
+else
+    echo ":: Goodbye $USER"
+fi
