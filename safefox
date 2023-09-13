@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 
 # SafeFox v0.1
-# 2022 - mendes94
 
 # First commit 
 
@@ -142,7 +141,8 @@ encrypted_prof(){
     local profdir="$1" 
     local proflist=()
     
-    while read -r prof; do #in $(find "$profdir" -maxdepth 1 -iname '*.gpg' | awk -F'/' '{print $NF}'); do
+    #in $(find "$profdir" -maxdepth 1 -iname '*.gpg' | awk -F'/' '{print $NF}'); do
+    while read -r prof; do 
         proflist+=("$prof" "")
     done < <(awk '/.*\.gpg/ {print $0}' <(ls "$profdir"))
     
@@ -197,9 +197,11 @@ encrypt(){
     local profile=$2
     local cipher=$3
     local destdir=$4
+    local recipient=$5
     local tarfile="${profile}.tar"
     local gpgfile="${profile}.gpg"
-   
+  
+
     # TODO
     # 1 - Output stderr to a log '/var/tmp/safefox.log'
     {
@@ -211,22 +213,23 @@ encrypt(){
         echo 100
     } | dialog --title "SafeFox" --gauge "Archiving profile..." 8 80
 
-    {
-        if [[ $cipher = "Asymmetric" ]]; then
-            recipient=$(pgp_recipient)
-            [ "$recipient" ] || rm -r "$TMPDIR" && return 1
-            gpg -o "$destdir/$gpgfile" --encrypt --recipient "$recipient" "$destdir/$tarfile" 2> /dev/null
-        else
-            gpg -o "$destdir/$gpgfile" -c "$destdir/$tarfile" 2> /dev/null;
-            if [ $? -eq 2 ]; then
-                rm -r "$TMPDIR"
-                return 2
-            fi
-        fi
-        echo 50; sleep 0.25; echo 100
-    } | dialog --title "SafeFox" --gauge "Encrypting profile" 8 80
-
-    return 0
+   if [[ $cipher = "Asymmetric" ]]; then
+       #recipient=$(pgp_recipient)
+       if [ ! "$recipient" ];then
+       	   rm -r "$TMPDIR/$profdir"
+       	   return 1
+       fi
+       #echo $recipient
+       gpg -o "$destdir/$gpgfile" --encrypt --recipient "$recipient" "$destdir/$tarfile" 2> /dev/null
+   else
+       gpg -o "$destdir/$gpgfile" -c "$destdir/$tarfile" 2> /dev/null;
+       if [ $? -eq 2 ]; then
+           rm -r "$TMPDIR/$profdir"
+           return 2
+       fi
+   fi
+    
+   return 0
 }
 
 sanitize(){
@@ -281,8 +284,8 @@ run_browser(){
     dialog --title "SafeFox" --infobox "Starting browser..." 8 80
     case $1 in
         "Firefox") $FJ firefox --private-window --profile "$TMPDIR/$2" &> /dev/null;;
-        "TorBrowser") ;;
-        "Librewolf") $FJ librewolf --private-window --profile "$TMPDIR/$2" &> /dev/null;;
+        "TorBrowser");;
+        "Librewolf") firejail --quiet --seccomp --apparmor librewolf --private-window --profile "$TMPDIR/$2" &> /dev/null;;
         *) return 1;;
     esac
     dialog --title "SafeFox" --infobox "Closing the browser" 8 80
@@ -384,7 +387,9 @@ load(){
    
    local gpgfile
    gpgfile=$(encrypted_prof "$profdir"); [ "$gpgfile" ] || return 2
-   
+
+   local recipient=$(gpg --pinentry-mode cancel --list-packets "$profdir/$gpgfile" | awk '/keyid/{print $9}')
+
    local tarfile=${gpgfile//gpg/tar}
 
     [ -d "$TMPDIR" ] || mkdir -m 700 "$TMPDIR"
@@ -401,7 +406,7 @@ load(){
     run_browser "$browser" "${gpgfile//.gpg/}"
 
     # Reencrypting folder to save modifications 
-    encrypt "$TMPDIR" "${gpgfile//.gpg}" "$(file_encryption_method "$profdir/$gpgfile")" "$TMPDIR"
+    encrypt "$TMPDIR" "${gpgfile//.gpg}" "$(file_encryption_method "$profdir/$gpgfile")" "$TMPDIR" "$recipient"
 
     # Checks if the gpg profile was created in tmpfs
     # to avoid removing the original one by accident
