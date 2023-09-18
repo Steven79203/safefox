@@ -53,7 +53,6 @@
 declare -A BROWSERS_PATH=(
     ["Firefox"]="$HOME/.mozilla/firefox"
     ["Librewolf"]="$HOME/.librewolf"
-    ["TorBrowser"]="$HOME/.local/share/torbrowser/tbb/x86_64/tor-browser_*/Browser/TorBrowser/Data/Browser"
     ["WaterFox"]="$HOME/.waterfox")
 
 TMPDIR=/tmp/safefox
@@ -192,12 +191,9 @@ pgp_recipient(){
 }
 
 encrypt(){
-    # Labels for the arguments 
     local profdir=$1 
     local profile=$2
-    local cipher=$3
-    local destdir=$4
-    local recipient=$5
+    local destdir=$3
     local tarfile="${profile}.tar"
     local gpgfile="${profile}.gpg"
   
@@ -213,23 +209,32 @@ encrypt(){
         echo 100
     } | dialog --title "SafeFox" --gauge "Archiving profile..." 8 80
 
-   if [[ $cipher = "Asymmetric" ]]; then
-       #recipient=$(pgp_recipient)
-       if [ ! "$recipient" ];then
-       	   rm -r "$TMPDIR/$profdir"
-       	   return 1
-       fi
-       #echo $recipient
-       gpg -o "$destdir/$gpgfile" --encrypt --recipient "$recipient" "$destdir/$tarfile" 2> /dev/null
-   else
-       gpg -o "$destdir/$gpgfile" -c "$destdir/$tarfile" 2> /dev/null;
-       if [ $? -eq 2 ]; then
-           rm -r "$TMPDIR/$profdir"
-           return 2
-       fi
-   fi
-    
+   recipient=$(pgp_recipient)
+
+   [ ! "$recipient" ] && rm -r "$TMDIR/$profdir" && return 1
+   
+   gpg -o "$destdir/$gpgfile" --encrypt --recipient "$recipient" "$destdir/$tarfile" 2> /dev/null
+ 
    return 0
+   
+   # REMOVED SYMETRIC CYFER.
+   # Use only asymmetric encryption
+   #if [[ $cipher = "Asymmetric" ]]; then
+   #    #recipient=$(pgp_recipient)
+   #    if [ ! "$recipient" ];then
+   #    	   rm -r "$TMPDIR/$profdir"
+   #    	   return 1
+   #    fi
+   #    #echo $recipient
+   #    gpg -o "$destdir/$gpgfile" --encrypt --recipient "$recipient" "$destdir/$tarfile" 2> /dev/null
+   #else
+   #    gpg -o "$destdir/$gpgfile" -c "$destdir/$tarfile" 2> /dev/null;
+   #    if [ $? -eq 2 ]; then
+   #        rm -r "$TMPDIR/$profdir"
+   #        return 2
+   #    fi
+   #fi
+    
 }
 
 sanitize(){
@@ -311,16 +316,17 @@ create(){
         return 0
     fi
     
+    # REMOVE SYMMETRIC CIPHER
     # Cipher type. (asymmetric, symmetric)
-    local cipher
-    cipher=$(encryption_method);
+    #local cipher
+    #cipher=$(encryption_method);
     # If cipher is empty it exits (probably canceled by user)
-    [ "$cipher" ] || return 0
+    #[ "$cipher" ] || return 0
 
     [ -d "$TMPDIR" ] || mkdir -m 700 "$TMPDIR"
     
     # encrypt <profile_rootdir> <profile> <cipher> <destdir>
-    if ! encrypt "$profdir" "$profile" "$cipher" "$TMPDIR"; then
+    if ! encrypt "$profdir" "$profile" "$TMPDIR"; then
         dialog --title 'SafeFox' --infobox 'Operation canceled by the user' 8 80
         exit 
     fi
