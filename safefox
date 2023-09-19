@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# SafeFox v0.1
+# SafeFox v0.1 alpha
 
 # First commit 
 
@@ -53,13 +53,14 @@
 declare -A BROWSERS_PATH=(
     ["Firefox"]="$HOME/.mozilla/firefox"
     ["Librewolf"]="$HOME/.librewolf"
-    ["TorBrowser"]="$HOME/.local/share/torbrowser/tbb/x86_64/tor-browser_*/Browser/TorBrowser/Data/Browser"
-    ["WaterFox"]="$HOME/.waterfox")
+    ["WaterFox"]="$HOME/.waterfox"
+	["Dummy"]="$HOME/Git/Safefox/dummyprofiles") # For debugging purposes
 
 TMPDIR=/tmp/safefox
-#LOGFILE=/tmp/safefox.log
+LOGFILE=/tmp/safefox.log
 
 # FUNCTIONS
+# # TODO : Change options
 arguments_parser(){
     local FJ="firejail --quiet --seccomp";
     local AA="--apparmor"
@@ -155,6 +156,7 @@ encrypted_prof(){
            --menu 'Select encrypted profile to restore' 15 40 5 "${proflist[@]}" 3>&1 1>&2 2>&3
 }
 
+# TODO: Remove encryption method function
 encryption_method(){
     dialog --title 'SafeFox' --menu 'Select Encyption Method' 10 90 2 \
     "Symmetric"  "   Uses a password to both encrypt and decrypt the file" \
@@ -162,6 +164,7 @@ encryption_method(){
     3>&1 1>&2 2>&3
 }
 
+# TODO: Remove file encryption method
 file_encryption_method(){
     [ "$1" ] || return 2
     local filepath=$1; 
@@ -192,12 +195,12 @@ pgp_recipient(){
 }
 
 encrypt(){
-    # Labels for the arguments 
+    # Labels
     local profdir=$1 
     local profile=$2
-    local cipher=$3
-    local destdir=$4
-    local recipient=$5
+    #local cipher=$3
+    local destdir=$3
+    local recipient=$4
     local tarfile="${profile}.tar"
     local gpgfile="${profile}.gpg"
   
@@ -213,21 +216,21 @@ encrypt(){
         echo 100
     } | dialog --title "SafeFox" --gauge "Archiving profile..." 8 80
 
-   if [[ $cipher = "Asymmetric" ]]; then
-       #recipient=$(pgp_recipient)
+	# Check for recipient.
+#    if [[ $cipher = "Asymmetric" ]]; then
        if [ ! "$recipient" ];then
        	   rm -r "$TMPDIR/$profdir"
        	   return 1
        fi
        #echo $recipient
        gpg -o "$destdir/$gpgfile" --encrypt --recipient "$recipient" "$destdir/$tarfile" 2> /dev/null
-   else
-       gpg -o "$destdir/$gpgfile" -c "$destdir/$tarfile" 2> /dev/null;
-       if [ $? -eq 2 ]; then
-           rm -r "$TMPDIR/$profdir"
-           return 2
-       fi
-   fi
+#      else
+#      gpg -o "$destdir/$gpgfile" -c "$destdir/$tarfile" 2> /dev/null;
+#      if [ $? -eq 2 ]; then
+#        rm -r "$TMPDIR/$profdir"
+#      return 2
+#  fi
+#fi
     
    return 0
 }
@@ -281,6 +284,7 @@ decrypt(){
 }
 
 run_browser(){
+	# TODO: Write a different command for each level of protection (FJ, X11, etc)
     dialog --title "SafeFox" --infobox "Starting browser..." 8 80
     case $1 in
         "Firefox") $FJ firefox --private-window --profile "$TMPDIR/$2" &> /dev/null;;
@@ -311,16 +315,18 @@ create(){
         return 0
     fi
     
+    # TODO: Remove symmetric cypher. 
     # Cipher type. (asymmetric, symmetric)
-    local cipher
-    cipher=$(encryption_method);
-    # If cipher is empty it exits (probably canceled by user)
-    [ "$cipher" ] || return 0
+    #local cipher
+    #cipher=$(encryption_method);
+    ## If cipher is empty it exits (probably canceled by user)
+    #[ "$cipher" ] || return 0
 
     [ -d "$TMPDIR" ] || mkdir -m 700 "$TMPDIR"
     
-    # encrypt <profile_rootdir> <profile> <cipher> <destdir>
-    if ! encrypt "$profdir" "$profile" "$cipher" "$TMPDIR"; then
+    # encrypt <profile_rootdir> <profile> <destdir> <recipient>
+    #if ! encrypt "$profdir" "$profile" "$cipher" "$TMPDIR" "$(pgp_recipient)"; then
+    if ! encrypt "$profdir" "$profile" "$TMPDIR" "$(pgp_recipient)"; then
         dialog --title 'SafeFox' --infobox 'Operation canceled by the user' 8 80
         exit 
     fi
@@ -388,6 +394,7 @@ load(){
    local gpgfile
    gpgfile=$(encrypted_prof "$profdir"); [ "$gpgfile" ] || return 2
 
+   # Read the recipient of the encrypted PGP file
    local recipient=$(gpg --pinentry-mode cancel --list-packets "$profdir/$gpgfile" | awk '/keyid/{print $9}')
 
    local tarfile=${gpgfile//gpg/tar}
@@ -405,11 +412,14 @@ load(){
     # Running browser
     run_browser "$browser" "${gpgfile//.gpg/}"
 
+    #TODO: Make an autosave function to automaticaly save the profile while it's being used
+
     # Reencrypting folder to save modifications 
-    encrypt "$TMPDIR" "${gpgfile//.gpg}" "$(file_encryption_method "$profdir/$gpgfile")" "$TMPDIR" "$recipient"
+    #encrypt "$TMPDIR" "${gpgfile//.gpg}" "$(file_encryption_method "$profdir/$gpgfile")" "$TMPDIR" "$recipient"
+    encrypt "$TMPDIR" "${gpgfile//.gpg}" "$TMPDIR" "$recipient"
 
     # Checks if the gpg profile was created in tmpfs
-    # to avoid removing the original one by accident
+    # to avoid removing the original file by accident
     if [ ! -e "$TMPDIR/$gpgfile" ]; then
         dialog --title 'SafeFox' --msgbox \
             "An error occurried!.\n\
@@ -430,6 +440,7 @@ load(){
 
 #MAIN FUNCTION
 main(){
+	# TODO: Make an recover function after an power failure
     arguments_parser "$@"
     [ "$help" ] && callforhelp
     while true; do    
