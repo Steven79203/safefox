@@ -194,6 +194,7 @@ encrypt(){
     local profdir=$1 
     local profile=$2
     local destdir=$3
+    local recipient=$4
     local tarfile="${profile}.tar"
     local gpgfile="${profile}.gpg"
   
@@ -208,8 +209,6 @@ encrypt(){
         fi
         echo 100
     } | dialog --title "SafeFox" --gauge "Archiving profile..." 8 80
-
-   recipient=$(pgp_recipient)
 
    [ ! "$recipient" ] && rm -r "$TMDIR/$profdir" && return 1
    
